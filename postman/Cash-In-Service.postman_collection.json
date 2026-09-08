@@ -1,0 +1,341 @@
+{
+  "info": {
+    "name": "EjercicioLigo — Cash-In Service",
+    "description": "Collection para probar POST /cash-in y POST /webhooks/payment.\n\nVariables:\n- baseUrl: http://localhost:3000\n- idempotencyKey: se genera sola en varios requests\n\nOrden sugerido: Health → Cash-in Success → Idempotency Retry → Provider Fail → Timeout → Webhooks.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "idempotencyKey", "value": "" },
+    { "key": "userId", "value": "usr_postman_1" },
+    { "key": "providerPaymentId", "value": "" },
+    { "key": "operationId", "value": "" },
+    { "key": "earlyKey", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "0. Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/health",
+        "description": "Verifica que la API está arriba."
+      }
+    },
+    {
+      "name": "1. Cash-in — Success",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const key = require('uuid').v4 ? require('uuid').v4() : (crypto.randomUUID ? crypto.randomUUID() : '11111111-1111-4111-8111-' + Date.now().toString().slice(-12));",
+              "try { pm.collectionVariables.set('idempotencyKey', crypto.randomUUID()); } catch (e) { pm.collectionVariables.set('idempotencyKey', '11111111-1111-4111-8111-' + Date.now().toString().padStart(12,'0').slice(-12)); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('completed', () => pm.expect(body.status).to.eql('completed'));",
+              "pm.collectionVariables.set('operationId', body.operation_id);",
+              "if (pm.response.headers.get('X-Correlation-Id')) {",
+              "  console.log('correlation', pm.response.headers.get('X-Correlation-Id'));",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Idempotency-Key", "value": "{{idempotencyKey}}" },
+          { "key": "X-Correlation-Id", "value": "postman-success" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{userId}}\",\n  \"amount\": 100.00,\n  \"currency\": \"PEN\",\n  \"payment_method\": \"card_ok\"\n}"
+        },
+        "url": "{{baseUrl}}/cash-in",
+        "description": "Happy path. Genera una Idempotency-Key nueva en pre-request."
+      }
+    },
+    {
+      "name": "2. Cash-in — Idempotency Retry (misma key)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('mismo operation_id', () => pm.expect(body.operation_id).to.eql(pm.collectionVariables.get('operationId')));",
+              "pm.test('completed', () => pm.expect(body.status).to.eql('completed'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Idempotency-Key", "value": "{{idempotencyKey}}" },
+          { "key": "X-Correlation-Id", "value": "postman-retry" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{userId}}\",\n  \"amount\": 100.00,\n  \"currency\": \"PEN\",\n  \"payment_method\": \"card_ok\"\n}"
+        },
+        "url": "{{baseUrl}}/cash-in",
+        "description": "Reenvía la MISMA Idempotency-Key del request 1. Debe devolver el mismo resultado sin doble crédito."
+      }
+    },
+    {
+      "name": "3. Cash-in — Provider Fail",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "try { pm.collectionVariables.set('failKey', crypto.randomUUID()); } catch (e) { pm.collectionVariables.set('failKey', '22222222-2222-4222-8222-' + Date.now().toString().padStart(12,'0').slice(-12)); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Error 4xx', () => pm.expect(pm.response.code).to.be.within(400, 499));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Idempotency-Key", "value": "{{failKey}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{userId}}\",\n  \"amount\": 50.00,\n  \"currency\": \"PEN\",\n  \"payment_method\": \"card_fail\"\n}"
+        },
+        "url": "{{baseUrl}}/cash-in",
+        "description": "payment_method termina en _fail → proveedor rechaza."
+      }
+    },
+    {
+      "name": "4. Cash-in — Provider Timeout",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "try { pm.collectionVariables.set('timeoutKey', crypto.randomUUID()); } catch (e) { pm.collectionVariables.set('timeoutKey', '33333333-3333-4333-8333-' + Date.now().toString().padStart(12,'0').slice(-12)); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('status provider_unknown o completed', () => {",
+              "  pm.expect(['provider_unknown', 'completed']).to.include(body.status);",
+              "});",
+              "pm.collectionVariables.set('timeoutKeySaved', pm.collectionVariables.get('timeoutKey'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Idempotency-Key", "value": "{{timeoutKey}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{userId}}\",\n  \"amount\": 70.00,\n  \"currency\": \"PEN\",\n  \"payment_method\": \"card_timeout\"\n}"
+        },
+        "url": "{{baseUrl}}/cash-in",
+        "description": "Simula la pregunta central: timeout del proveedor. Puede quedar provider_unknown o completed (si reconcile inmediato)."
+      }
+    },
+    {
+      "name": "5. Cash-in — Timeout Retry (misma key, no doble cobro)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('termina completed sin nuevo charge ciego', () => pm.expect(body.status).to.eql('completed'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Idempotency-Key", "value": "{{timeoutKey}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{userId}}\",\n  \"amount\": 70.00,\n  \"currency\": \"PEN\",\n  \"payment_method\": \"card_timeout\"\n}"
+        },
+        "url": "{{baseUrl}}/cash-in",
+        "description": "Retry del cliente con la MISMA key del timeout. Debe reconciliar, no cobrar dos veces."
+      }
+    },
+    {
+      "name": "6. Webhook — Succeeded (tras un cash-in)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "try { pm.collectionVariables.set('eventId', 'evt_' + crypto.randomUUID()); } catch (e) { pm.collectionVariables.set('eventId', 'evt_' + Date.now()); }",
+              "// provider_payment_id del mock: pay_ + primeros 12 hex de la key sin guiones",
+              "const key = pm.collectionVariables.get('idempotencyKey') || '';",
+              "const pay = 'pay_' + key.replace(/-/g, '').slice(0, 12);",
+              "pm.collectionVariables.set('providerPaymentId', pay);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('applied o ignored (si ya completed)', () => pm.expect(['applied','ignored','duplicate']).to.include(body.status));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event_id\": \"{{eventId}}\",\n  \"event_type\": \"payment.succeeded\",\n  \"provider_payment_id\": \"{{providerPaymentId}}\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"amount\": 100,\n  \"currency\": \"PEN\"\n}"
+        },
+        "url": "{{baseUrl}}/webhooks/payment",
+        "description": "Usa la key del request 1. Si la op ya está completed, responde ignored/applied sin doble crédito."
+      }
+    },
+    {
+      "name": "7. Webhook — Duplicado (mismo event_id)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('duplicate', () => pm.expect(pm.response.json().status).to.eql('duplicate'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event_id\": \"{{eventId}}\",\n  \"event_type\": \"payment.succeeded\",\n  \"provider_payment_id\": \"{{providerPaymentId}}\",\n  \"idempotency_key\": \"{{idempotencyKey}}\",\n  \"amount\": 100,\n  \"currency\": \"PEN\"\n}"
+        },
+        "url": "{{baseUrl}}/webhooks/payment",
+        "description": "Mismo event_id que el request 6 → debe ser duplicate."
+      }
+    },
+    {
+      "name": "8. Webhook ANTES del cash-in (buffer)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "let key;",
+              "try { key = crypto.randomUUID(); } catch (e) { key = '44444444-4444-4444-8444-' + Date.now().toString().padStart(12,'0').slice(-12); }",
+              "pm.collectionVariables.set('earlyKey', key);",
+              "pm.collectionVariables.set('earlyPay', 'pay_' + key.replace(/-/g, '').slice(0, 12));",
+              "try { pm.collectionVariables.set('earlyEvent', 'evt_early_' + crypto.randomUUID()); } catch (e) { pm.collectionVariables.set('earlyEvent', 'evt_early_' + Date.now()); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('buffered', () => pm.expect(pm.response.json().status).to.eql('buffered'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event_id\": \"{{earlyEvent}}\",\n  \"event_type\": \"payment.succeeded\",\n  \"provider_payment_id\": \"{{earlyPay}}\",\n  \"idempotency_key\": \"{{earlyKey}}\",\n  \"amount\": 33,\n  \"currency\": \"PEN\"\n}"
+        },
+        "url": "{{baseUrl}}/webhooks/payment",
+        "description": "Webhook llega antes de que exista la operación → buffered."
+      }
+    },
+    {
+      "name": "9. Cash-in DESPUÉS del webhook buffered",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', () => pm.response.to.have.status(200));",
+              "pm.test('completed', () => pm.expect(pm.response.json().status).to.eql('completed'));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Idempotency-Key", "value": "{{earlyKey}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"user_id\": \"{{userId}}\",\n  \"amount\": 33.00,\n  \"currency\": \"PEN\",\n  \"payment_method\": \"card_ok\"\n}"
+        },
+        "url": "{{baseUrl}}/cash-in",
+        "description": "Misma key del webhook 8. Aplica buffered y completa (puede cobrar o completar vía replay según estado)."
+      }
+    }
+  ]
+}
